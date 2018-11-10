@@ -8,12 +8,12 @@ This assignment and repository is developed and maintained by **Stefanie Lumnitz
 
 purpose | format
 ---------|--------
-[hw06-exercise](https://github.com/STAT545-UBC-students/hw05-slumnitz/blob/master/hw05-exercise.md) | .md
+[hw06-exercise recommended view](https://slumnitz.github.io/STAT547_participation/) | .html
+[hw06-exercise](https://github.com/STAT545-UBC-students/hw06-slumnitz/blob/master/hw06-exercise.md) | .md
 [R markdown source code](https://github.com/STAT545-UBC-students/hw05-slumnitz/blob/master/hw05-exercise.Rmd) | .Rmd
 
-
+Please use the [.html file](https://slumnitz.github.io/STAT547_participation/) to view my work
 
 ## Resources
 
-* [Gapminder dataset](https://cran.r-project.org/web/packages/gapminder/index.html)
 * [Singer dataset](https://github.com/JoeyBernhardt/singer)
