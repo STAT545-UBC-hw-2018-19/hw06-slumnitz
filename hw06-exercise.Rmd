@@ -1,0 +1,981 @@
+---
+title: 'Homework 06: Data wrangling wrap up'
+author: Stefanie Lumnitz
+date: "`r format(Sys.time(), '%d %B, %Y')`"   
+output:
+  html_document:
+    keep_md: true
+    toc: true
+    toc_depth: 2
+    theme: readable
+---
+
+
+### Load required packages
+
+```{r}
+library(singer)
+library(leaflet)
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(revgeo))
+suppressPackageStartupMessages(library(kableExtra))
+library(stringr)
+```
+
+
+# Exercise 4: Geospatial R and the `singer` data
+
+### Task
+
+The `singer_location` dataframe in the `singer` package contains geographical information stored in two different formats: 
+
+1. as a (dirty!) variable named `city`; 
+2. as a latitude / longitude pair (stored in `latitude`, `longitude` respectively). 
+
+I am trying to clean up the `city` variable containing multiple NA values, by adding addresses in the same format to each observation respectively. I will herefore use a technique called reverse geocoding:
+
+> **Reverse geocoding** is the process of converting geographic coordinates into a human-readable address.
+
+### Tools
+
+The exercise suggests to use:
+
+> **ggmap::revgeocode**: reverse geocodes a longitude/latitude location using Google Maps. Note that in most cases by using this function you are agreeing to the Google Maps API Terms of Service at https://developers.google.com/maps/terms.
+
+Suggestiing to use additional resources:
+[**Google Maps API**](https://developers.google.com/maps/documentation/geocoding/start?csw=1)
+
+Since I am using the daily limit of this very same required API key I decided to not use `revgeocode` and Google maps for this problem. I discovered a second package called [`revgeo`](https://github.com/mhudecheck/revgeo):
+
+> **revgeo::revgeo**: Enables the use of the Photon geocoder for OpenStreetMap, Google Maps, and Bing to reverse geocode coordinate pairs. Photon allows for unlimited geocode queries, while Google Maps and Bing provide a little more information for 'out of the way' locations. Google Maps and Bing require an API key, and Google Maps limits users to 2,500 free queries a day.
+
+I will test if this package and the freely available `Photon API` is sufficient for my purpose.
+
+### Singer dataset:
+
+The singer dataset can be loaded and installed as follows:
+
+```{r}
+## install singer
+# install.packages("devtools")
+# devtools::install_github("JoeyBernhardt/singer")
+## load singer
+```
+
+Let's assess first what the singer dataset contains, before starting to manipulate it:
+
+```{r}
+glimpse(singer_locations)
+```
+
+In order to make things a little more clear, let's only look at a subset of `singer_locations`, including the variables `artist`, `latitude`, `longitude`, `city` and for fun later on `hottness` and `familiarity`.
+
+```{r}
+geo_singer <- singer_locations %>% 
+  select(artist = artist_name,
+         latitude = latitude,
+         longitude = longitude,
+         city_singer = city,
+         hottness = artist_hotttnesss,
+         familiarity = artist_familiarity)
+```
+
+Furthermore, the task's description gives a hint that not all of the observations have latitude and longitude values. I will drop all observations with NA values in latitude and longitude, since this is the main required input for our `revgeo()` function. Additionally, I will remove artists that can be found twice in the dataset, since I am mainly interested in an artists hotness, not in the unreadable track ID.
+
+```{r}
+geo_singer_clean <- geo_singer %>% 
+  distinct(artist, .keep_all = TRUE) %>% # remove duplicate artist names
+  na.omit(cols=c("latitude", "longitude")) # remove all rows with NA values in lat or lon
+geo_singer_clean %>% 
+  head(10) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+```{r}
+mysummary_table <- function(df) {
+  tab <- data.frame(
+    "rows" = nrow(df))
+  return(tab)
+}
+```
+
+```{r}
+mysummary_table(geo_singer) 
+mysummary_table(geo_singer_clean)
+```
+
+After a clean-up, we have 2988 from 10100 observations left.
+
+## Reverse geocoding with revgeo()
+
+We can now feed in latitude and longitude coordinates to retrieve addresses using `revgeo`:
+
+```{r}
+# geo_singer_clean$revgeo <-
+#   map2(geo_singer_clean$longitude, geo_singer_clean$latitude, revgeo)
+```
+
+Unfortunately 2988 observations or Photon requests are too many to handle on my laptlop. After the code ran for a while, my RStudio and my laptop crash. The last messages showing in the console includes, which is an indication for the code running, but taking too much processing power or temporary memory to execute all lines:
+
+```
+[1] "Getting geocode data from Photon: http://photon.komoot.de/reverse?lon=-0.12714&lat=51.50632"
+[1] "Getting geocode data from Photon: http://photon.komoot.de/reverse?lon=-74.00712&lat=40.71455"
+[1] "Getting geocode data from Photon: http://photon.komoot.de/reverse?lon=-1.14392&lat=52.94922"
+[1] "Getting geocode data from Photon: http://photon.komoot.de/reverse?lon=-46.71173&lat=-23.6361"
+[1] "Getting geocode data from Photon: http://photon.komoot.de/reverse?lon=-74.21612&lat=40.81741"
+```
+
+To avoid crashing my whole computer we have to subset the dataframe and the requests further. How about we subset the dataframe according to the hotness levels of artists. We can then do reverse geocoding and check where the hottest artists in the world live. We need to use `purrr::map_df` for processing, because `revgeo` returns a list and we would like to directly see our results in a new table later on:
+
+
+```{r hot_or_not}
+hot_or_not <- function(x=0, y=1){
+  # filter hotness
+  singer_hot_or_not <- geo_singer_clean %>% 
+    filter(hottness > x & hottness < y)
+  # extract revgeo cities, retreived as df
+  cities <- map2_df(singer_hot_or_not$longitude, singer_hot_or_not$latitude,
+               ~ revgeo(.x, .y, output='hash', item=c('city', 'state', 'country')))
+  # combine dfs
+  singer_city <- cbind(singer_hot_or_not, cities)
+  return(singer_city)
+}
+```
+
+Let's try to retrieve reverse geocodes for the hottest (>0.8) and not so hot (<0.2) artists:
+
+```{r revgeo}
+hottest_artists <- hot_or_not(x=0.8)
+not_so_hot_artists <- hot_or_not(y=0.2)
+```
+
+```{r}
+kable(hottest_artists) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+
+```{r}
+kable(not_so_hot_artists) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+However, sometimes the `revgeo` package has trouble identifying a city at all and only returns a not found statement. 
+
+## Performance of `revgeo()`
+
+Let's try and find out whether the original `city` values correspond to the retrieved information using the `not_so_hot_artists`.
+
+The main problems here are, first, that our original city column contains information in different formats. "NY - New York City" for example is differently formatted to "Marshall, MO". Second, that our retrieved information is separated in diferent columns like `city` and `state`.
+
+We will therefore:
+
+1. Transform state names into their full names in `singer_city`,
+2. unite city and state names into one column for `revgeo_city`
+3. and try to find at least one match intersecting word in both, the original and revgeo created city names.
+
+```{r}
+# defined replacement values
+replacements <- c("NY" = "New York", "CA" = "California", "LA" = "Louisiana", "MO" = "Missouri", "D.C." = "District Of Columbia")
+
+# replace abbreviations by full name
+singer_city <- not_so_hot_artists$city_singer %>%
+  map(str_replace_all, replacements) %>% 
+  str_split(pattern = boundary("word"))
+
+# combine `city` and `state` in one column
+revgeo_city <- not_so_hot_artists %>%
+  unite("revgeo_city", c("city", "state"), sep=" ") %>% 
+  select("revgeo_city") %>% 
+  str_split(pattern = boundary("word"))
+
+## find intersection and check if there is at least one match
+correct <- map2(singer_city, revgeo_city, ~intersect(.x, .y)) %>% 
+  map(function(l) {
+    return(length(l) >= 1)
+  })
+
+# show results
+cbind(not_so_hot_artists$city_singer, not_so_hot_artists$city, not_so_hot_artists$state, correct) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+We can see that all names matched, except of one that wasnot found.
+
+
+## Visualization
+
+We can use `leaflet` to visualize our results. 
+
+Resources:
+
+- [Leaflet for R tutorial](https://rstudio.github.io/leaflet/)
+
+```{r}
+map_hottest_artists <- hottest_artists %>%  
+  leaflet()  %>%   
+  addTiles() %>% 
+  addProviderTiles(providers$Esri.NatGeoWorldMap) %>% # choose mapbackground
+  addMarkers(popup = ~artist, label = ~hottness) %>% # add a marker
+  addMiniMap() # add an overview map
+map_hottest_artists
+```
+
+
+## Reflection
+
+Due to the format in which `revgeo` returns the downloaded data, I had difficulties to add the `possibly()` check to `hot_or_not()` function. First, I had to come up with a workaround to add the retrieved `revgeo` data found in a list in a new column. Using `map2_df` and `cbind` helped in unpacking the nested list and binding the two dataframes. However, this trick in the end hindered me in using `possibly()` to accound for erroneous reverse geocodes. `possibly()` is used defining the parameter `otherwise`. A default value to use when an error occurs, this however did not play out well with me generating a dataframe with three columns. Therefore the use of possibly needs more time to be integrated in my function.
+
+
+
+# Exercise 1: Character data adn Regular Expressions
+
+This task is quite long and contains a lot of detail.
+I would like to point out that I used 
+
+* the `testthat` package to check certain issues and questions and
+* that I wrote a couple of functions allowing ti iterate more quickly through the exercises.
+
+
+### Task
+Read and work the exercises in the [Strings chapter](https://r4ds.had.co.nz/strings.html) or R for Data Science.
+
+
+## 14.2.5 Exercises: String basics
+
+### **In code that doesn't use stringr, you'll often see `paste()` and `paste0()`. What's the difference between the two functions? What stringr function are they equivalent to? How do the functions differ in their handling of NA?**
+
+Sinply check the documentation for both functions typing `?*function*` in the console.
+
+> `paste()` and `paste0()`: Concatenate vectors after converting to character.
+
+* `paste (..., sep = " ", collapse = NULL)`
+
+* `paste0(..., collapse = NULL)`
+
+```{r}
+paste("Stefanie", "Lumnitz")
+paste0("Stefanie", "Lumnitz")
+```
+
+The function `paste()` separates strings by spaces by default, while `paste0()` does not separate strings with spaces by default. Otherwise they are equivalent.
+  
+They are equivalent to the `str_c` function.
+
+```{r}
+str_c("Stefanie", "Lumnitz")
+```
+
+`str_c()` does not separate strings with spaces by default either. It's default is closer to `paste0`
+
+* `str_c(..., sep = "", collapse = NULL)`
+
+Let's check how they handle NA values:
+
+```{r}
+str_c("Stefanie", NA)
+paste("Stefanie", NA)
+paste0("Stefanie", NA)
+```
+
+Both functions handle NA values differently. `str_c` propagates NA. If any value is missing, it returns a missing value. `paste` on the other hand converts NA into a string `"NA"` and treats it like any other character vector.
+
+
+### **In your own words, describe the difference between the sep and collapse arguments to str_c().**
+
+```{r}
+name <- c("Stefanie", "Lumnitz")
+info <- c("first", "last")
+str_c(name, info, sep= "")
+str_c(name, info, sep= "_", collapse = " ")
+```
+
+`sep` is the argument to use to insert a string between arguments `'_'`. If `collapse` is used, it is the string that separates element pairs of two or more input vectors and all input vectors are merged to a character vector of lenth 1. 
+
+
+### **Use str_length() and str_sub() to extract the middle character from a string. What will you do if the string has an even number of characters?**
+
+> `str_length()` returns the number of "code points", in a string. One code point usually corresponds to one character, but not always. For example, an u with a umlaut might be represented as a single character or as the combination a u and an umlaut. (Since I am German an umlaut is important in my language and should not be neglected)
+
+> `str_sub` will recycle all arguments to be the same length as the longest argument. If any arguments are of length 0, the output will be a zero length character vector.
+
+Option one extracts the middle character and the first character to the left of the middle in case our string is uneven:
+
+```{r}
+numbers <- c("1", "123", "1234", "12345", "123456")
+
+length <- str_length(numbers)
+left <- ceiling(length / 2)
+str_sub(numbers, left, left)
+```
+
+Option two extracts the middle character and the first character to the right of the middle in case our string is uneven:
+
+```{r}
+length <- str_length(numbers)
+right <- floor(length / 2)
+str_sub(numbers, right, right)
+```
+
+We can see that option one is the method that always returns a character. DUe to the use of `floor()` option two misses a character if the input character has length 1.
+
+We can also make a function out of this:
+
+```{r}
+middle <- function(x, left_or_right=left){
+  length <- str_length(x)
+  right <- floor(length / 2)
+  left <- ceiling(length / 2)
+  middle_str <- str_sub(x, left_or_right, left_or_right)
+}
+```
+
+```{r}
+(middle(numbers, left_or_right=right))
+```
+
+### **What does `str_wrap()` do? When might you want to use it?**
+
+> str_wrap(string, width = 80, indent = 0, exdent = 0)
+
+We can use `str_wrap()` to fit text within a certain width. This is for example useful in order to process ones R package documentation according to [Google's R styleguide](https://google.github.io/styleguide/Rguide.xml#linelength). 
+
+> The maximum line length is 80 characters.
+
+```{r}
+long_documentation <- "long() is a wrapper of stats::reshape() that takes the data from a wide format to a long format. It can also handle unbalanced data (where some measures have different number of time points)."
+cat(long_documentation)
+cat(str_wrap(long_documentation, width=80), sep = "\n")
+```
+
+
+### **What does str_trim() do? What’s the opposite of str_trim()?**
+
+The function `str_trim()` delets starting or/and trailing whitespaces from a string.
+
+```{r}
+string_with_spaces = "  Hello    World!  "
+str_trim(string_with_spaces)
+str_trim(string_with_spaces, side = "left")
+str_trim(string_with_spaces, side = "right")
+```
+
+`str_squish()` also reduces repeated whitespace inside a string.
+
+```{r}
+str_squish(string_with_spaces)
+```
+
+`str_pad()` adds whitespaces and is the opposite of `str_trim()`.
+
+```{r}
+str_pad(string_with_spaces, 5, side="both")
+```
+
+
+### **Write a function that turns (e.g.) a vector c("a", "b", "c") into the string a, b, and c. Think carefully about what it should do if given a vector of length 0, 1, or 2.**
+
+If the final strings are a, b and c our function needs to handle four issues:
+
+1. *length of vector is 0*: we return an empty string (""); 
+2. *length of vector is 1*: we return the original vector ("a");
+3. *length of vector is 2*: we return both elements separated by an "and" ("a and b").
+4. *length of vector is >2*: we return all but the last element separated by commas and the last element separated by an "and" ("a, b and c").
+
+Let's get started:
+
+```{r}
+vector_to_string <- function(x) {
+  l <- length(x)
+  if (l == 0) {
+    ""
+  } else if (l == 1) {
+    x
+  } else if (l == 2) {
+    str_c(x[[1]], "and", x[[2]], sep = " ")
+  } else {
+    first_chr <- str_c(x[seq_len(l-1)], collapse = ", ") # handle all but last
+    new_string <- str_c(first_chr, x[length(x)], sep = " and ")
+  }
+}
+```
+
+Let's use `testthat` package to test our function.
+
+```{r}
+suppressPackageStartupMessages(library(testthat))
+```
+
+
+```{r}
+v0 <- c()
+v1 <- c("a")
+v2 <- c("a", "b")
+v4 <- c ("a", "b", "c", "d")
+
+test_that("function vector_to_string() is wrong", {
+  expect_equal(vector_to_string(v0), "")
+  expect_equal(vector_to_string(v1), "a")
+  expect_equal(vector_to_string(v2), "a and b")
+  expect_equal(vector_to_string(v4), "a, b, c and d")
+})
+
+(vector_to_string(v4))
+```
+
+All the above tests have passed.
+
+
+
+
+## 14.3.1.1 Exercises: Basic matches
+
+### **Explain why each of these strings don’t match a \: "\", "\\", "\\\".**
+
+* "\" will escape the next character in an R string. Escape character meaning we are undoing the "special" meaning of what follows after. E.g. if we want to match a dot, we need to use `\.` since a simple `.` has the special meaning to match a character.
+
+*  "\\" will resolve to \ in the regular expression. This will escape the next character in the regular expression.
+
+* "\\\" will escape an escaped character, since the first two backslashes resolve to a literal backslash in the regular expression and the third will escape the next character.
+
+> To match a literal `\` we need four backslashes `\\\\`!
+
+
+### **How would you match the sequence "'\\?**
+
+Since "'" and "\\" need to be escaped in regex, we need to use "\\'\\\\" to match it.
+
+```{r}
+str_view("\"'\\", "\"'\\\\")
+```
+
+
+### **What patterns will the regular expression \\..\\..\\.. match? How would you represent it as a string?**
+
+Regex "\\..\\..\\.." will match any pattern that is a dot followed by any character, repeated three times. Here is an example, "a", "b", or "c" can be any other characters.
+
+```{r}
+test_pattern <- c(".a.b.c", ".a.b", ".....")
+str_view(test_pattern, c("\\..\\..\\.."))
+```
+
+
+
+## 14.3.2.1 Exercises: Anchors
+
+### **How would you match the literal string "\$^\$"?**
+
+We need to escape "\$" and "^" in regex, "\\\\\$\\\\^\\\\\$" is a suitable pattern.
+
+```{r}
+test_pattern <- c("$^$", "ab$^$sfas")
+str_view(test_pattern, pattern = "^\\$\\^\\$$")
+```
+
+### **Given the corpus of common words in stringr::words, create regular expressions that find all words that:**
+
+**Start with “y”.**
+
+```{r}
+str_view(words, pattern = "^y", match = TRUE)
+```
+
+
+**End with “x”**
+
+```{r}
+str_view(words, "x$", match = TRUE)
+```
+
+**Are exactly three letters long. (Don’t cheat by using str_length()!)**
+
+```{r}
+str_view(words, "^...$", match = TRUE)
+```
+
+**Have seven letters or more.**
+
+```{r}
+str_view(stringr::words, ".......", match = TRUE)
+```
+
+
+## 14.3.3.1 Exercises: Character classes and alternatives
+
+### **Create regular expressions to find all words that:**
+
+**Words starting with vowels**
+
+Since the `words` library is quite long, we will create a subset fromnow on and continue all examplkes with the subset:
+
+```{r}
+# create subset of randomly selected words
+random_words <- runif(100, 1, length(words))
+subset_words <- words %>% 
+  `[`(random_words) %>% 
+  sort()
+```
+
+
+```{r}
+str_view(subset_words, "^[aeiou]", match = TRUE)
+```
+
+**That only contain consonants. (Hint: thinking about matching “not”-vowels.)**
+
+```{r}
+str_view(subset_words, "^[^aeiou]+$", match=TRUE)
+```
+
+**End with ed, but not with eed.**
+
+```{r}
+test_case <- c("bed", "beed")
+str_view(test_case, "^ed$|[^e]ed$", match = TRUE)
+```
+
+**End with ing or ise.**
+
+```{r}
+str_view(subset_words, "i(ng|se)$", match = TRUE)
+```
+
+
+### **Empirically verify the rule "i before e except after c".**
+
+To solve this question, it means we need to ensure:
+
+- The number of "ie" and the number of "cei" are high enough.
+- The number of "ei" and the number of "cie" are low enough.
+
+Therefore, we try the following to regexes.
+
+```{r}
+x <- sum(str_detect(words, "(cei|[^c]ie)"))
+y <- sum(str_detect(words, "(cie|[^c]ei)"))
+x
+y
+
+test_that("The rule is not correct", {
+  expect_more_than(as.double(x), as.double(y))
+})
+```
+
+The test passes and the the rule is empirically verified.
+
+### **Is "q" always followed by a "u"?**
+
+
+```{r}
+str_view(stringr::words, "q[^u]", match = TRUE)
+```
+
+The result is empty, so the statement is true for the `words` dataset.
+
+### **Write a regular expression that matches a word if it's probably written in British English, not American English.**
+
+SInce my mother tongue is German and I am neither an expert in British nor in American english, I will only test specific cases:
+
+1. “ou” instead of “o” in British English
+2. British English ends in ise instead of ize
+
+```{r}
+test_words <- c("colour", "color", "honour", "honor", "labor", "labour", "vectorize", "vectorise")
+
+str_view(test_words, pattern = "ou|ise$", match = TRUE)
+```
+
+
+### **Create a regular expression that will match telephone numbers as commonly written in your country.**
+
+The telephone numbers in German commpnly follow the rule: "+49 111 1111111". Therefore we can use the following regex to detect it.
+
+```{r}
+test_telephone_numbers <- c("+1 (778) 069 2357", "+49 222 4433666", "+852 2309 9667", "+49 222 4455556")
+
+str_view(test_telephone_numbers, pattern = "\\+49 [0-9]{3} [0-9]{7}", match=TRUE)
+```
+
+
+
+
+## 14.3.4.1 Exercises: Repetition
+
+
+### **Describe the equivalents of `?`, `+`, `*` in {m,n} form.**
+
+ Pattern | {m,n} | Meaning
+---------|-------|--------
+ ? | {0,1} | Match at most 1
+ + | {1,} | Match 1 or more
+ * | {0,} | Match 0 or more
+
+
+### **Describe in words what these regular expressions match: (read carefully to see if I'm using a regular expression or a string that defines a regular expression.)**
+
+- `^.*$` matches any string.
+- `"\\{.+\\}"` matches any string with curly braces surrounding at least one character.
+- `\d{4}-\d{2}-\d{2}` matches a string that looks like dddd-dd-dd, where d is a digit. For example a date.
+- `"\\\\{4}"` is `\\{4}` and will match four backslashes.
+
+
+### **Create regular expressions to find all words that:**
+
+**Start with three consonants**
+
+```{r}
+str_view(subset_words, "^[^aeiou]{3}", match = TRUE)
+```
+
+**Have three or more vowels in a row.**
+
+```{r}
+str_view(words, pattern = "[aeoiu]{3,}", match = TRUE)
+```
+
+**Have two or more vowel-consonant pairs in a row.**
+
+```{r}
+str_view(subset_words, "([aeiou][^aeiou]){2,}", match=TRUE)
+```
+
+
+
+
+## 14.3.5.1 Exercises: Grouping and backreferences
+
+### **Describe, in words, what these expressions will match:**
+
+* `(.)\1\1` matches the same character appearing three times in a row, "bbb".
+* `"(.)(.)\\2\\1"` matches two characters followed by the same pair of characters in reversed order, "baab".
+* `(..)\1` matches any two characters repeated in teh same order, "abab".
+* `"(.).\\1.\\1"` matches a string with five characters: an original character followed by any character, the original character again, any other character, the original character a third time, "babdb", "a1a2a".
+* `"(.)(.)(.).*\\3\\2\\1"` matches a set of three characters, followed by zero or more characters of any kind followed by the same three characters but in reverse order "xyzzyx", "zyx1xyz".
+
+
+### **Construct regular expressions to match words that:**
+
+**Start and end with the same character.**
+
+```{r}
+str_view(subset_words, "^(.)((.*\\1$)|\\1?$)", match = TRUE)
+```
+
+**Contain a repeated pair of letters (e.g. "church" contains "ch" repeated twice.)**
+
+```{r}
+str_view(subset_words, "(..).*\\1", match = TRUE)
+```
+
+**Contain one letter repeated in at least three places (e.g. "eleven" contains three "e"s.)**
+
+```{r}
+str_view(words, pattern = "(.).*\\1.*\\1", match = TRUE)
+```
+
+## 14.4.2 Exercises: Detect matches
+
+### **For each of the following challenges, try solving it by using both a single regular expression, and a combination of multiple str_detect() calls.**
+
+**Find all words that start or end with x.**
+
+```{r}
+words[str_detect(words, "^x|x$")]
+```
+
+```{r}
+start <- str_detect(words, "^x")
+end <- str_detect(words, "x$")
+words[start | end]
+```
+
+**Find all words that start with a vowel and end with a consonant.**
+
+```{r}
+str_view(subset_words, "^[aeiou].*[^aeiou]$", match=TRUE)
+```
+
+
+```{r}
+start <- str_detect(subset_words, "^[aeiou]")
+end <- str_detect(subset_words, "[^aeiou]$")
+subset_words[start | end]
+```
+
+
+**Are there any words that contain at least one of each different vowel?**
+
+We can use multiple `str_detect()` calls, one pattern for each vowel to check:
+
+```{r}
+contains_vowel <- function(x) {
+  vowels <- c("a", "e", "i", "o", "u")
+  check <- as.logical(seq(from = 1, to = 1, along.with = x))
+  for (chr in vowels) {
+    check <- check & str_detect(x, pattern = chr)
+  }
+  return(x[check])
+}
+```
+
+
+```{r}
+test_that("function contains_vowel() does not work", {
+  test_string <- "aberixowu"
+  expect_equal(test_string, contains_vowel(test_string))
+})
+```
+
+```{r}
+contains_vowel(subset_words)
+```
+There are no matching words.
+
+
+**What word has the highest number of vowels? What word has the highest proportion of vowels? (Hint: what is the denominator?)**
+
+```{r}
+num_vowels <- str_count(words, "[aeiou]")
+words[which(num_vowels == max(num_vowels))]
+```
+
+There are 8 words with 5 vowels each.
+
+```{r}
+prop_vowels <- str_count(words, "[aeiou]") / str_length(words)
+words[which(prop_vowels == max(prop_vowels))]
+```
+
+The result is reasonable because the word "a" is 100% vowel.
+
+
+
+
+## 14.4.3.1 Exercises: Extract matches
+
+### **In the previous example, you might have noticed that the regular expression matched “flickered”, which is not a colour. Modify the regex to fix the problem.**
+
+"flickered" matched "red", because the characters of the colour are contained by the word. TO avoid this we would like to detect colours as single words only. We can achieve this by using `\b` to indicate a word boundary:
+
+
+```{r}
+colours <- c("red", "orange", "yellow", "green", "blue", "purple")
+colour_match <- str_c("\\b(", str_c(colours, collapse = "|"), ")\\b")
+str_view_all(sentences, colour_match, match = TRUE)
+```
+
+
+### **From the Harvard sentences data, extract the following words.**
+
+**The first word from each sentence.**
+
+We can use `str_extract` if we define a word to be any continous set of letters:
+
+> `str_extract()`: Extract matching patterns from a string. 
+
+```{r}
+str_extract(sentences, "[a-zA-Z]+") %>% head()
+```
+
+**All words ending in `ing`.**
+
+`str_extract_all()` tries to extract all matches from a string, and put them into a vector.
+
+```{r}
+ing_words <- str_extract_all(sentences, pattern = "\\b[a-zA-Z]+ing\\b", simplify = TRUE)
+ing_words[ing_words != ""] %>% 
+  head()
+```
+
+**All plurals.**
+
+We simplify the definition of all plurals to be all words ending in an “s” and with more than three characters (to remove “as”, “is”, “gas”).
+
+```{r}
+unique(unlist(str_extract_all(sentences, "\\b[A-Za-z]{3,}s\\b"))) %>%
+  head()
+```
+
+This unfortunately also includes verbs like `makes`.
+
+
+
+
+## 14.4.4 Exercises: Grouped Matches
+
+### **Find all words that come after a "number" like "one", "two", "three" etc. Pull out both the number and the word.**
+
+```{r}
+numwords <- "(one|two|three|four|five|six|seven|eight|nine|ten) +(\\S+)"
+sentences[str_detect(sentences, numwords)] %>%
+  str_extract(numwords)
+```
+
+### **Find all contractions. Separate out the pieces before and after the apostrophe.**
+
+```{r}
+contraction <- "([A-Za-z]+)'([A-Za-z]+)"
+sentences %>%
+  `[`(str_detect(sentences, contraction)) %>%
+  str_extract(contraction)
+```
+
+
+
+
+## 14.4.5 Exercises: Replacing Matches
+
+### **Replace all forward slashes in a string with backslashes.**
+
+```{r}
+test_string <- c("2018/November/09")
+writeLines(str_replace_all(test_string, "\\/", "\\\\"))
+```
+
+### **Implement a simple version of `str_to_lower()` using `replace_all()`.**
+
+```{r}
+test_strings <- c("HELLO", "WorLd")
+str_to_lower(test_strings)
+
+str_replace_all(test_strings, c("A"="a", "B"="b", "C"="c", "D"="d", "E"="e", "F"="f", "G"="g", "H"="h", "I"="i", "J"="j", "K"="k", "L"="l", "M"="m", "N"="n", "O"="o", "P"="p", "Q"="q", "R"="r", "S"="s", "T"="t", "U"="u", "V"="v", "W"="w", "X"="x", "Y"="y", "Z"="z"))
+```
+
+### **Switch the first and last letters in words. Which of those strings are still words?**
+
+We use `str_replace()` to switch the lettersand `intersect()` to see which words are still correct.
+
+```{r}
+switch <- swapped <- str_replace_all(words, "^([A-Za-z])(.*)([a-z])$", "\\3\\2\\1")
+
+head(intersect(words, switch), 10)
+```
+
+
+
+
+
+## 14.4.6 Exercises: Splitting
+
+
+### **Split up a string like "apples, pears, and bananas" into individual components.**
+
+
+```{r}
+test_string <- c("apples, pears, and bananas")
+str_split(test_string, ", +(and +)?")[[1]]
+```
+
+
+### **Why is it better to split up by `boundary("word")` than " "?**
+
+Let's try to use " " to split.
+
+```{r}
+test_string <- c("apples, pears, and bananas")
+
+str_split(test_string, " ")
+str_split(test_string, boundary("word"))
+```
+
+As shown, `boundary("word")` makes sure only words are selected, without other characters like `","`.
+
+
+### **What does splitting with an empty string ("") do? Experiment, and then read the documentation.**
+
+```{r}
+test_string <- c("apples, pears, and bananas")
+str_split(test_string, "")[[1]]
+```
+
+Based on the results and the documentation:
+
+> An empty pattern, '', is equivalent to `boundary('character')`'
+
+an empty string splits a string into individual characters.
+
+
+## 14.5.1. Exercises: Other types of patterns
+
+### **How would you find all strings containing `\` with `regex()` vs. with `fixed()`?**
+
+Using `fixed()` has the benefit that we only need to add escape characters for regex.
+
+```{r}
+test_string <- c("2018\\November")
+str_view(test_string, pattern = "\\\\")
+str_view(test_string, pattern = fixed("\\"))
+```
+
+
+### **What are the five most common words in `sentences`?**
+
+We first try to get all words in `sentences` using `str_extract_all()` with `boundary("word")`. Then we can convert the results into a tibble and use techniques discribes in STAT 545A to tidy up the data and find the most common words.
+
+```{r}
+word_list <- sentences %>% 
+  str_extract_all(boundary("word"), simplify = TRUE) %>% 
+  str_to_lower()
+
+tibble(words = word_list) %>% 
+  count(words, sort = TRUE) %>%
+  head() %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+`the` is the most common word.
+
+## 14.7.1 Exercises: stringi
+
+```{r}
+library(stringi)
+```
+
+
+### **Find the stringi functions that:**
+
+**Count the number of words.**
+
+We can use `stri_count_words()`:
+
+```{r}
+test_string <- "How many words does this sentence have?"
+
+test_that("The number of words is not correct", {
+  expect_equal(stri_count_words(test_string), 7)
+})
+```
+
+**Find duplicated strings**
+
+We can use two functions for this problem:
+
+* `stri_duplicated()` determines which strings in a character vector are duplicates of other elements.
+* `stri_duplicated_any()` determines if there are any duplicated strings in a character vector.
+
+We write a function using these two functions, so it can output duplicated strings if they exist.
+
+**Generate random text.**
+
+We can use the following two functions to generate random texts:
+
+* `stri_rand_lipsum()` generates lorem ipsum text
+* `stri_rand_strings()` generates random strings
+* `stri_rand_shuffle()` randomly shuffles the code points (characters) in the text.
+
+```{r}
+stri_rand_lipsum(1)
+```
+
+### **How do you control the language that stri_sort() uses for sorting?**
+
+According to the documentation we can use either:
+
+* `stri_sort(..., locale = ...)` or
+* `stri_sort(..., opts_collator=stri_opts_collator(locale = ...))`
+
